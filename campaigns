@@ -1,0 +1,333 @@
+import json
+
+from rest_framework import status, filters, generics
+from rest_framework.generics import get_object_or_404
+from rest_framework.views import APIView
+from rest_framework import viewsets, mixins
+from rest_framework.response import Response
+from rest_framework.renderers import JSONRenderer
+
+from django.http import Http404
+
+from bidder.models import Campaign, Creative, TargetApp, TargetAppWhite, TargetAppBlack, City
+from bidder.serializers import CampaignSerializer, CreativeSerializer, TargetAppSerializer, TargetAppWhiteSerializer, \
+    TargetAppBlackSerializer, CitySerializer
+
+
+class CampaignAPIView(generics.ListCreateAPIView):
+    queryset = Campaign.objects.exclude(archived=True).all()
+    serializer_class = CampaignSerializer
+    filter_backends = (filters.SearchFilter,)
+    search_fields = ('=id', 'title',)
+
+
+class CampaignDetailAPIView(APIView):
+    """
+    Retrieve, update a campaign instance.
+    """
+
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def get(self, request, pk, format=None):
+        campaign = self.get_object(pk)
+        serializer = CampaignSerializer(campaign)
+        return Response(serializer.data)
+
+    def put(self, request, pk, format=None):
+        campaign = self.get_object(pk)
+        serializer = CampaignSerializer(campaign, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CampaignCreativesAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def get(self, request, pk):
+        """
+        Get creative list for campaign
+        """
+        campaign = self.get_object(pk)
+        return Response(CreativeSerializer(campaign.creatives, many=True).data)
+
+    def post(self, request, pk, format=None):
+        """
+        Add creative for campaign
+        """
+        campaign = self.get_object(pk)
+        serializer = CreativeSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+
+            creative_id = json.loads(str(JSONRenderer().render(serializer.data), 'utf-8'))["id"]
+            creative_obj = Creative.objects.get(id=creative_id)
+            campaign.creatives.add(creative_obj)
+            campaign.save()
+
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CampaignActivateAPIView(APIView):
+    def put(self, request, pk):
+        try:
+            campaign = Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        campaign.active = True
+        campaign.save()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignDeactivateAPIView(APIView):
+    def put(self, request, pk):
+        try:
+            campaign = Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        campaign.active = False
+        campaign.save()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignArchiveAPIView(APIView):
+    def put(self, request, pk, format=None):
+        try:
+            campaign = Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        campaign.archived = True
+        campaign.save()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignAppsWhiteAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def get(self, request, pk):
+        """
+        Get apps_white list for campaign
+
+        filters:
+            ?limit=
+            ?limit=&page=
+        """
+        campaign = self.get_object(pk)
+        if request.GET.get("limit", 0):
+            limit = int(request.GET["limit"])
+            if request.GET.get("page", 0):
+                page = int(request.GET["page"])
+                if page > 1:
+                    offset = (page - 1) * limit
+                    limit += offset
+                    apps_white = campaign.apps_white.all()[offset:limit]
+                else:
+                    apps_white = campaign.apps_white.all()[:limit]
+            else:
+                apps_white = campaign.apps_white.all()[:limit]
+        else:
+            apps_white = campaign.apps_white.all()
+
+        return Response(TargetAppWhiteSerializer(apps_white, many=True).data)
+
+    def post(self, request, pk, format=None):
+        """
+        Add app in white_list for campaign
+        """
+        campaign = self.get_object(pk)
+        app_white = TargetAppWhite()
+        app_white.name = request.data["bundle"]
+        app_white.campaign = campaign
+        app_white.save()
+        campaign.apps_white.add(app_white)
+        return Response(TargetAppWhiteSerializer(app_white).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, pk, format=None):
+        campaign = self.get_object(pk)
+        TargetAppWhite.objects.filter(name=request.data['bundle'], campaign=campaign).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignAppsWhiteListAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def post(self, request, pk, format=None):
+        """
+        Add apps_list in white_list for campaign
+        """
+        campaign = self.get_object(pk)
+        for app in request.data["target_apps"]:
+            app_white = TargetAppWhite()
+            app_white.name = app
+            app_white.campaign = campaign
+            app_white.save()
+            campaign.apps_white.add(app_white)
+
+        return Response(TargetAppWhiteSerializer(campaign.apps_white.all(), many=True).data)
+
+
+class CampaignAppsBlackAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def get(self, request, pk):
+        """
+        Get apps_black list for campaign
+
+        filters:
+            ?limit=
+            ?limit=&page=
+        """
+        campaign = self.get_object(pk)
+        if request.GET.get("limit", 0):
+            limit = int(request.GET["limit"])
+            if request.GET.get("page", 0):
+                page = int(request.GET["page"])
+                if page > 1:
+                    offset = (page - 1) * limit
+                    limit += offset
+                    apps_black = campaign.apps_black.all()[offset:limit]
+                else:
+                    apps_black = campaign.apps_black.all()[:limit]
+            else:
+                apps_black = campaign.apps_black.all()[:limit]
+        else:
+            apps_black = campaign.apps_black.all()
+
+        return Response(TargetAppBlackSerializer(apps_black, many=True).data)
+
+    def post(self, request, pk, format=None):
+        """
+        Add app in black_list for campaign
+        """
+        campaign = self.get_object(pk)
+        apps_black = TargetAppBlack()
+        apps_black.name = request.data["bundle"]
+        apps_black.campaign = campaign
+        apps_black.save()
+        campaign.apps_black.add(apps_black)
+        return Response(TargetAppBlackSerializer(apps_black).data, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, pk, format=None):
+        campaign = self.get_object(pk)
+        TargetAppBlack.objects.filter(name=request.data["bundle"], campaign=campaign).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignAppsBlackListAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def post(self, request, pk, format=None):
+        """
+        Add apps_list in white_list for campaign
+        """
+        campaign = self.get_object(pk)
+        for app in request.data["target_apps"]:
+            app_black = TargetAppBlack()
+            app_black.name = app
+            app_black.campaign = campaign
+            app_black.save()
+            campaign.apps_black.add(app_black)
+
+        return Response(TargetAppBlackSerializer(campaign.apps_black.all(), many=True).data)
+
+
+class CampaignActivateAutobrokerAPIView(APIView):
+    def put(self, request, pk):
+        try:
+            campaign = Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        campaign.autobroker = True
+        campaign.save()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignDeactivateAutobrokerAPIView(APIView):
+    def put(self, request, pk):
+        try:
+            campaign = Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        campaign.autobroker = False
+        campaign.save()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CampaignAutobrokerAPIView(APIView):
+    def get_object(self, pk):
+        try:
+            return Campaign.objects.get(pk=pk)
+        except Campaign.DoesNotExist:
+            raise Http404
+
+    def get(self, request, pk):
+        campaign = self.get_object(pk)  # type: Campaign
+        lesion = campaign.min_profit
+        return Response(data=lesion, status=status.HTTP_200_OK)
+
+    def put(self, request, pk):
+        campaign = self.get_object(pk)  # type: Campaign
+        if campaign.autobroker:
+            campaign.min_profit = request.data["lesion"]
+            campaign.save()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        else:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
+class CityViewSet(mixins.ListModelMixin,
+                  mixins.CreateModelMixin,
+                  mixins.DestroyModelMixin,
+                  viewsets.GenericViewSet):
+    lookup_field = 'name'
+    lookup_url_kwarg = 'city_name'
+    queryset = City.objects.all()
+    serializer_class = CitySerializer
+    methods = []
+
+    def initial(self, request, *args, **kwargs):
+        self.campaign = get_object_or_404(Campaign.objects, pk=self.kwargs['pk'])
+        super().initial(request, *args, **kwargs)
+
+    def get_queryset(self):
+        return super().get_queryset().filter(campaign=self.campaign)
+
+    def perform_create(self, serializer):
+        serializer.instance = City(campaign=self.campaign)
+        serializer.save()
